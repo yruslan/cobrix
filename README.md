@@ -127,8 +127,6 @@ of that project for the detailed guide how to run the examples locally and on a 
 When running `mvn clean package` in `examples/spark-cobol-app` an uber jar will be created. It can be used to run
 jobs via `spark-submit` or `spark-shell`. 
 
-For introductory materials, see the [Documentation Index](docs/01_index.md).
-
 ### Reading Cobol binary files from Hadoop/local and querying them 
 
 1. Create a Spark ```SQLContext```
@@ -328,6 +326,8 @@ $ spark-shell --jars spark-cobol_2.12_3.3-2.10.5-SNAPSHOT-bundle.jar
 >   ```
 
 ## Detailed Overview of Features
+
+For introductory materials, see the [Documentation Index](docs/01_index.md).
 
 Converting mainframe files to Spark DataFrames consists of 3 main steps. Each step has its own options to `spark-cobol`:
 
