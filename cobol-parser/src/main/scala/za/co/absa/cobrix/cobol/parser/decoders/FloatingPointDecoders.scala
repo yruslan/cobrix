@@ -154,7 +154,7 @@ object FloatingPointDecoders {
           val ieee754Int = sign + (convertedExp << 23) + fracture
           java.lang.Float.intBitsToFloat(ieee754Int)
         } else if (convertedExp > 254) {
-          java.lang.Float.POSITIVE_INFINITY
+          if (sign != 0) java.lang.Float.NEGATIVE_INFINITY else java.lang.Float.POSITIVE_INFINITY
         } else if (convertedExp >= -32) {
           val mask = ~(0xFFFFFFFD << (-1 - convertedExp))
           val roundUp = if ((fracture & mask) > 0) 1 else 0
