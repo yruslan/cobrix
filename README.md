@@ -1936,8 +1936,8 @@ The writer is still in its early stages and has several limitations:
 - Writing multi-segment files is not supported.
 - Supported types:
   - `PIC X(n)` alphanumeric.
-  - `PIC S9(n)` numeric (integral and decimal) with `DISPLAY`, `COMP`/`COMP-4`/`COMP-5` (big-endian), `COMP-3`, and 
-    `COMP-9` (Cobrix little-endian).
+  - `PIC S9(n)` numeric (integral and decimal) with `DISPLAY`, `COMP`/`COMP-4`/`COMP-5` (big-endian), 
+    `COMP-1`/`COMP2` (floating-point IBM and IEEE754) , `COMP-3`, and `COMP-9` (Cobrix little-endian).
 - Only fixed record length and variable record length with RDWs are supported (`record_format` is either `F` or `V`).
 - `REDEFINES` are ignored. Cobrix writes only the first field in a REDEFINES group.
 - Partitioning by DataFrame fields is not supported.
