@@ -22,7 +22,7 @@ import org.apache.spark.sql.{DataFrame, Row}
 import org.slf4j.LoggerFactory
 import za.co.absa.cobrix.cobol.parser.Copybook
 import za.co.absa.cobrix.cobol.parser.ast.datatype.{AlphaNumeric, COMP3, Decimal, Integral}
-import za.co.absa.cobrix.cobol.parser.ast.{Group, Primitive}
+import za.co.absa.cobrix.cobol.parser.ast.{Group, Primitive, Statement}
 import za.co.absa.cobrix.cobol.parser.policies.VariableSizeOccursPolicy
 import za.co.absa.cobrix.cobol.parser.recordformats.RecordFormat
 import za.co.absa.cobrix.cobol.reader.parameters.{ReaderParameters, WriterParameters}
@@ -234,18 +234,72 @@ object NestedRecordCombiner {
     * @param path         The path to the field
     * @param dependeeMap  A map of field names to their corresponding DependingOnField specs, used to resolve dependencies for OCCURS DEPENDING ON fields.
     * @param strictSchema If true, each field in the copybook must exist in the Spark schema.
-    * @return A [[GroupField]] covering all non-filler, non-redefines children found in both
-    *         the copybook and the Spark schema.
+    * @return A [[GroupField]] covering all children found in both the copybook and the Spark
+    *         schema. Fields that participate in a REDEFINES chain are grouped together into a
+    *         single [[RedefineGroup]] node representing all mutually exclusive alternatives.
     */
   private def buildGroupField(group: Group, schema: StructType, getter: GroupGetter, path: String, dependeeMap: mutable.HashMap[String, DependingOnField], strictSchema: Boolean): GroupField = {
-    val children = group.children.withFilter { stmt =>
-      stmt.redefines.isEmpty
-    }.map {
-      case s if s.isFiller => Filler(s.binaryProperties.actualSize)
-      case p: Primitive    => buildPrimitiveNode(p, schema, path, dependeeMap, strictSchema)
-      case g: Group        => buildGroupNode(g, schema, path, dependeeMap, strictSchema)
+    val rawChildren = group.children
+    val processed = new mutable.ArrayBuffer[WriterAst]()
+
+    var i = 0
+    while (i < rawChildren.length) {
+      val stmt = rawChildren(i)
+      // A REDEFINES chain starts at a non-redefining field and is immediately followed
+      // (in declaration order) by one or more fields that redefine an earlier field of the chain.
+      // This mirrors the clustering logic used by BinaryPropertiesAdder when computing binary sizes.
+      var j = i + 1
+      while (j < rawChildren.length && rawChildren(j).redefines.nonEmpty) {
+        j += 1
+      }
+      val clusterStmts = rawChildren.slice(i, j)
+
+      if (clusterStmts.length == 1) {
+        processed += buildChildNode(stmt, schema, path, dependeeMap, strictSchema)
+      } else {
+        processed += buildRedefineGroup(clusterStmts.toSeq, schema, path, dependeeMap, strictSchema)
+      }
+
+      i = j
     }
-    GroupField(children.toSeq, group, getter)
+    GroupField(processed.toSeq, group, getter)
+  }
+
+  /**
+    * Builds a single [[WriterAst]] node for a copybook statement, dispatching to the
+    * appropriate builder based on whether the statement is a filler, primitive or group.
+    */
+  private def buildChildNode(stmt: Statement, schema: StructType, path: String, dependeeMap: mutable.HashMap[String, DependingOnField], strictSchema: Boolean): WriterAst = stmt match {
+    case s if s.isFiller => Filler(s.binaryProperties.actualSize)
+    case p: Primitive    => buildPrimitiveNode(p, schema, path, dependeeMap, strictSchema)
+    case g: Group         => buildGroupNode(g, schema, path, dependeeMap, strictSchema)
+  }
+
+  /**
+    * Builds a [[RedefineGroup]] node from a chain of mutually exclusive copybook statements
+    * (a base field followed by one or more fields that REDEFINE it, directly or transitively).
+    *
+    * Individual alternatives are built without enforcing `strictSchema` since it is expected
+    * that only one alternative is present in the Spark schema for a given row; the strict
+    * check is instead performed once, at the level of the whole chain: if none of the
+    * alternatives are found in the schema, the usual strict/non-strict schema behavior applies.
+    */
+  private def buildRedefineGroup(clusterStmts: Seq[Statement], schema: StructType, path: String, dependeeMap: mutable.HashMap[String, DependingOnField], strictSchema: Boolean): RedefineGroup = {
+    val alternatives = clusterStmts.map { s =>
+      RedefineAlternative(s.name, buildChildNode(s, schema, path, dependeeMap, strictSchema = false))
+    }
+
+    val isPresent = alternatives.exists(alt => !alt.ast.isInstanceOf[Filler])
+    if (!isPresent) {
+      val fieldNames = clusterStmts.map(_.name).mkString("', '")
+      if (strictSchema) {
+        throw new IllegalArgumentException(s"None of the REDEFINES alternatives ('$fieldNames') at '$path${clusterStmts.head.name}' are found in Spark schema.")
+      } else {
+        log.warn(s"None of the REDEFINES alternatives ('$fieldNames') at '$path${clusterStmts.head.name}' are found in Spark schema. Will be replaced by filler.")
+      }
+    }
+
+    RedefineGroup(alternatives, clusterStmts.head.binaryProperties.actualSize)
   }
 
   /**
@@ -484,6 +538,38 @@ object NestedRecordCombiner {
           )
           if (variableLengthOccurs) 0 else cobolField.binaryProperties.actualSize
         }
+
+      // ── REDEFINES group (mutually exclusive alternatives sharing the same bytes) ─────
+      case RedefineGroup(alternatives, actualSize) =>
+        val populated = alternatives.filter(alt => isPopulated(alt.ast, row))
+        populated match {
+          case Seq() =>
+            // No alternative has a value for this row: leave the shared bytes as zeroes.
+            actualSize
+          case Seq(only) =>
+            writeToBytes(only.ast, row, ar, currentOffset, variableLengthOccurs, writerParameters)
+            actualSize
+          case multiple =>
+            val fieldNames = multiple.map(_.fieldName).mkString("', '")
+            throw new IllegalArgumentException(
+              s"Conflicting REDEFINES fields populated on the same row: '$fieldNames'. " +
+                s"Only one field of a REDEFINES group can have a non-null value at a time."
+            )
+        }
     }
+  }
+
+  /**
+    * Determines whether a writer AST node has a non-null value to write for the given row.
+    * Used to detect which alternative(s) of a REDEFINES chain are populated for a row.
+    */
+  private def isPopulated(ast: WriterAst, row: Row): Boolean = ast match {
+    case Filler(_)                       => false
+    case PrimitiveField(_, getter)       => getter(row) != null
+    case PrimitiveDependeeField(_)       => false
+    case GroupField(_, _, getter)        => getter(row) != null
+    case PrimitiveArray(_, arrayGetter, _) => arrayGetter(row) != null
+    case GroupArray(_, _, arrayGetter, _)  => arrayGetter(row) != null
+    case RedefineGroup(alternatives, _)  => alternatives.exists(alt => isPopulated(alt.ast, row))
   }
 }

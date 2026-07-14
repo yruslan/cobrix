@@ -24,6 +24,8 @@ import za.co.absa.cobrix.spark.cobol.source.base.SparkTestBase
 import za.co.absa.cobrix.spark.cobol.source.fixtures.{BinaryFileFixture, TextComparisonFixture}
 import za.co.absa.cobrix.spark.cobol.utils.SparkUtils
 
+import scala.annotation.tailrec
+
 class FixedLengthEbcdicWriterSuite extends AnyWordSpec with SparkTestBase with BinaryFileFixture with TextComparisonFixture {
 
   import spark.implicits._
@@ -495,6 +497,346 @@ class FixedLengthEbcdicWriterSuite extends AnyWordSpec with SparkTestBase with B
         assert(fs.exists(path), "Output directory should exist")
       }
     }
+
+    "write data frames using REDEFINES fields" should {
+      val copybookContentsWithRedefines =
+        """       01  RECORD.
+             05  A       PIC X(1).
+             05  B       PIC 9(5).
+             05  B1      PIC X(5)       REDEFINES B.
+        """
+
+      "write using only the base field of a REDEFINES group" in {
+        withTempDirectory("cobol_writer_redefines") { tempDir =>
+          val df = List(("X", 12345)).toDF("A", "B")
+
+          val path = new Path(tempDir, "writer_redefines_base")
+
+          df.coalesce(1)
+            .write
+            .format("cobol")
+            .mode(SaveMode.Overwrite)
+            .option("copybook_contents", copybookContentsWithRedefines)
+            .save(path.toString)
+
+          val bytes = readPartFileBytes(path)
+
+          // Expected EBCDIC data: A='X', B=12345 (DISPLAY digits)
+          val expected = Array[Byte](
+            0xE7.toByte,
+            0xF1.toByte, 0xF2.toByte, 0xF3.toByte, 0xF4.toByte, 0xF5.toByte
+          )
+
+          assertArraysEqual(bytes, expected)
+        }
+      }
+
+      "write using only the redefining field of a REDEFINES group" in {
+        withTempDirectory("cobol_writer_redefines") { tempDir =>
+          val df = List(("X", "ABCDE")).toDF("A", "B1")
+
+          val path = new Path(tempDir, "writer_redefines_alt")
+
+          df.coalesce(1)
+            .write
+            .format("cobol")
+            .mode(SaveMode.Overwrite)
+            .option("copybook_contents", copybookContentsWithRedefines)
+            .save(path.toString)
+
+          val bytes = readPartFileBytes(path)
+
+          // Expected EBCDIC data: A='X', B1="ABCDE"
+          val expected = Array[Byte](
+            0xE7.toByte,
+            0xC1.toByte, 0xC2.toByte, 0xC3.toByte, 0xC4.toByte, 0xC5.toByte
+          )
+
+          assertArraysEqual(bytes, expected)
+        }
+      }
+
+      "fail fast when both the base and the redefining fields are populated on the same row" in {
+        withTempDirectory("cobol_writer_redefines") { tempDir =>
+          val df = List(("X", 12345, "ABCDE")).toDF("A", "B", "B1")
+
+          val path = new Path(tempDir, "writer_redefines_conflict")
+
+          val thrown = intercept[Throwable] {
+            df.coalesce(1)
+              .write
+              .format("cobol")
+              .mode(SaveMode.Overwrite)
+              .option("copybook_contents", copybookContentsWithRedefines)
+              .save(path.toString)
+          }
+
+          val messages = causeChainMessages(thrown)
+          assert(messages.exists(m => m.contains("B") && m.contains("B1")),
+            s"Expected an error mentioning both conflicting REDEFINES fields 'B' and 'B1', but got: ${messages.mkString(" | ")}")
+        }
+      }
+
+      "write a data frame with a mix of rows using the base field and rows using the redefining field" in {
+        withTempDirectory("cobol_writer_redefines") { tempDir =>
+          val df = List(
+            ("1", Some(11111), None),
+            ("2", None, Some("AAAAA")),
+            ("3", Some(33333), None),
+            ("4", None, Some("BBBBB"))
+          ).toDF("A", "B", "B1")
+
+          val path = new Path(tempDir, "writer_redefines_mixed_rows")
+
+          df.coalesce(1)
+            .write
+            .format("cobol")
+            .mode(SaveMode.Overwrite)
+            .option("copybook_contents", copybookContentsWithRedefines)
+            .save(path.toString)
+
+          val bytes = readPartFileBytes(path)
+
+          // Expected EBCDIC data per row: A=<digit>, then either B (DISPLAY digits) or B1 (alpha) depending on which is populated
+          val expected = Array[Byte](
+            0xF1.toByte, 0xF1.toByte, 0xF1.toByte, 0xF1.toByte, 0xF1.toByte, 0xF1.toByte,
+            0xF2.toByte, 0xC1.toByte, 0xC1.toByte, 0xC1.toByte, 0xC1.toByte, 0xC1.toByte,
+            0xF3.toByte, 0xF3.toByte, 0xF3.toByte, 0xF3.toByte, 0xF3.toByte, 0xF3.toByte,
+            0xF4.toByte, 0xC2.toByte, 0xC2.toByte, 0xC2.toByte, 0xC2.toByte, 0xC2.toByte
+          )
+
+          assertArraysEqual(bytes, expected)
+        }
+      }
+
+      "write using the third alternative of a three-way REDEFINES chain" in {
+        withTempDirectory("cobol_writer_redefines") { tempDir =>
+          val copybookContentsWithThreeWayRedefines =
+            """       01  RECORD.
+                 05  A       PIC X(1).
+                 05  B       PIC 9(5).
+                 05  B1      PIC X(5)       REDEFINES B.
+                 05  B2      PIC 9(3)V99    REDEFINES B.
+            """
+
+          val df = List(("X", new java.math.BigDecimal("123.45"))).toDF("A", "B2")
+
+          val path = new Path(tempDir, "writer_redefines_third")
+
+          df.coalesce(1)
+            .write
+            .format("cobol")
+            .mode(SaveMode.Overwrite)
+            .option("copybook_contents", copybookContentsWithThreeWayRedefines)
+            .save(path.toString)
+
+          val bytes = readPartFileBytes(path)
+
+          // Expected EBCDIC data: A='X', B2=123.45 (DISPLAY digits, implied decimal point)
+          val expected = Array[Byte](
+            0xE7.toByte,
+            0xF1.toByte, 0xF2.toByte, 0xF3.toByte, 0xF4.toByte, 0xF5.toByte
+          )
+
+          assertArraysEqual(bytes, expected)
+        }
+      }
+
+      "fail fast when two non-adjacent alternatives of a three-way REDEFINES chain are both populated" in {
+        withTempDirectory("cobol_writer_redefines") { tempDir =>
+          val copybookContentsWithThreeWayRedefines =
+            """       01  RECORD.
+                 05  A       PIC X(1).
+                 05  B       PIC 9(5).
+                 05  B1      PIC X(5)       REDEFINES B.
+                 05  B2      PIC 9(3)V99    REDEFINES B.
+            """
+
+          val df = List(("X", 12345, new java.math.BigDecimal("123.45"))).toDF("A", "B", "B2")
+
+          val path = new Path(tempDir, "writer_redefines_third_conflict")
+
+          val thrown = intercept[Throwable] {
+            df.coalesce(1)
+              .write
+              .format("cobol")
+              .mode(SaveMode.Overwrite)
+              .option("copybook_contents", copybookContentsWithThreeWayRedefines)
+              .save(path.toString)
+          }
+
+          val messages = causeChainMessages(thrown)
+          assert(messages.exists(m => m.contains("B") && m.contains("B2")),
+            s"Expected an error mentioning both conflicting REDEFINES fields 'B' and 'B2', but got: ${messages.mkString(" | ")}")
+        }
+      }
+
+      "write zero bytes when none of the REDEFINES alternatives are present and strict schema is disabled" in {
+        withTempDirectory("cobol_writer_redefines") { tempDir =>
+          val df = List(Tuple1("X")).toDF("A")
+
+          val path = new Path(tempDir, "writer_redefines_none_present")
+
+          df.coalesce(1)
+            .write
+            .format("cobol")
+            .mode(SaveMode.Overwrite)
+            .option("copybook_contents", copybookContentsWithRedefines)
+            .option("strict_schema", "false")
+            .save(path.toString)
+
+          val bytes = readPartFileBytes(path)
+
+          // Expected EBCDIC data: A='X', shared bytes left as zeroes
+          val expected = Array[Byte](
+            0xE7.toByte,
+            0x00, 0x00, 0x00, 0x00, 0x00
+          )
+
+          assertArraysEqual(bytes, expected)
+        }
+      }
+
+      "fail with a clear message when none of the REDEFINES alternatives are present and strict schema is enabled" in {
+        withTempDirectory("cobol_writer_redefines") { tempDir =>
+          val df = List(Tuple1("X")).toDF("A")
+
+          val path = new Path(tempDir, "writer_redefines_none_present_strict")
+
+          val ex = intercept[IllegalArgumentException] {
+            df.coalesce(1)
+              .write
+              .format("cobol")
+              .mode(SaveMode.Overwrite)
+              .option("copybook_contents", copybookContentsWithRedefines)
+              .save(path.toString)
+          }
+
+          assert(ex.getMessage.contains("B"))
+          assert(ex.getMessage.contains("B1"))
+        }
+      }
+
+      "write the full width of the REDEFINES cluster (max alternative size) and zero-pad unused trailing bytes " +
+        "when alternatives have different sizes" in {
+        withTempDirectory("cobol_writer_redefines") { tempDir =>
+          val copybookContentsDifferentSizes =
+            """       01  RECORD.
+                 05  A       PIC X(1).
+                 05  B       PIC 9(5).
+                 05  B1      PIC X(35)      REDEFINES B.
+            """
+
+          val df = List(("X", 12345, Option.empty[String])).toDF("A", "B", "B1")
+
+          val path = new Path(tempDir, "writer_redefines_diff_sizes")
+
+          df.coalesce(1)
+            .write
+            .format("cobol")
+            .mode(SaveMode.Overwrite)
+            .option("copybook_contents", copybookContentsDifferentSizes)
+            .save(path.toString)
+
+          val bytes = readPartFileBytes(path)
+
+          // The REDEFINES cluster always reserves the widest alternative's size (35 bytes for B1),
+          // even when the narrower alternative (B, 5 bytes) is the one populated.
+          // Expected EBCDIC data: A='X', B=12345 (DISPLAY digits), followed by 30 zero-bytes
+          // (the unused tail of B1's 35-byte region, left as binary zeroes rather than spaces).
+          val expected = Array[Byte](0xE7.toByte, 0xF1.toByte, 0xF2.toByte, 0xF3.toByte, 0xF4.toByte, 0xF5.toByte) ++
+            Array.fill[Byte](30)(0x00)
+
+          assert(bytes.length == 36, s"Expected a 36-byte record (1 + max(5, 35)), got ${bytes.length}")
+          assertArraysEqual(bytes, expected)
+        }
+      }
+
+      "write REDEFINES groups that contain nested sub-fields, selecting the active alternative via a " +
+        "record-type discriminator column" in {
+        withTempDirectory("cobol_writer_redefines") { tempDir =>
+          // REC-TYPE is a plain data column: it carries no special meaning to the writer (the active
+          // alternative is still chosen purely by which group is non-null on a given row), but it follows
+          // the common COBOL convention of tagging each record with a type code so that a reader can tell
+          // which REDEFINES alternative was used to write a row without inspecting the group contents.
+          val copybookContentsWithNestedRedefines =
+            """       01  RECORD.
+                 05  A          PIC X(1).
+                 05  REC-TYPE   PIC X(1).
+                 05  GRP-B.
+                    10  B-NUM   PIC 9(5).
+                    10  B-NAME  PIC X(5).
+                 05  GRP-B1     REDEFINES GRP-B.
+                    10  B1-CODE PIC X(3).
+                    10  B1-AMT  PIC 9(7).
+            """
+
+          val exampleJsons = Seq(
+            """{"A":"1","REC_TYPE":"B","GRP_B":{"B_NUM":12345,"B_NAME":"HELLO"}}""",
+            """{"A":"2","REC_TYPE":"1","GRP_B1":{"B1_CODE":"XYZ","B1_AMT":9876543}}"""
+          )
+
+          val df = spark.read.json(exampleJsons.toDS())
+            .select("A", "REC_TYPE", "GRP_B", "GRP_B1")
+
+          val path = new Path(tempDir, "writer_redefines_nested_groups")
+
+          df.coalesce(1)
+            .orderBy("A")
+            .write
+            .format("cobol")
+            .mode(SaveMode.Overwrite)
+            .option("copybook_contents", copybookContentsWithNestedRedefines)
+            .save(path.toString)
+
+          val bytes = readPartFileBytes(path)
+
+          // Row 1: A='1', REC-TYPE='B', GRP-B populated (B-NUM=12345, B-NAME="HELLO"), GRP-B1 absent.
+          val row1 = Array[Byte](
+            0xF1.toByte, 0xC2.toByte,
+            0xF1.toByte, 0xF2.toByte, 0xF3.toByte, 0xF4.toByte, 0xF5.toByte,
+            0xC8.toByte, 0xC5.toByte, 0xD3.toByte, 0xD3.toByte, 0xD6.toByte
+          )
+          // Row 2: A='2', REC-TYPE='1', GRP-B1 populated (B1-CODE="XYZ", B1-AMT=9876543), GRP-B absent.
+          val row2 = Array[Byte](
+            0xF2.toByte, 0xF1.toByte,
+            0xE7.toByte, 0xE8.toByte, 0xE9.toByte,
+            0xF9.toByte, 0xF8.toByte, 0xF7.toByte, 0xF6.toByte, 0xF5.toByte, 0xF4.toByte, 0xF3.toByte
+          )
+
+          assertArraysEqual(bytes, row1 ++ row2)
+        }
+      }
+    }
+  }
+
+  def readPartFileBytes(path: Path): Array[Byte] = {
+    val fs = path.getFileSystem(spark.sparkContext.hadoopConfiguration)
+
+    assert(fs.exists(path), "Output directory should exist")
+    val files = fs.listStatus(path)
+      .filter(_.getPath.getName.startsWith("part-"))
+    assert(files.nonEmpty, "Output directory should contain part files")
+
+    val partFile = files.head.getPath
+    val data = fs.open(partFile)
+    val bytes = new Array[Byte](files.head.getLen.toInt)
+    data.readFully(bytes)
+    data.close()
+    bytes
+  }
+
+  def causeChainMessages(t: Throwable): List[String] = {
+    @tailrec
+    def loop(current: Throwable, acc: List[String], seen: Set[Throwable]): List[String] = {
+      if (current == null || seen.contains(current)) {
+        acc
+      } else {
+        val message = Option(current.getMessage).getOrElse("")
+        loop(current.getCause, acc :+ message, seen + current)
+      }
+    }
+    loop(t, Nil, Set.empty)
   }
 
 
