@@ -44,7 +44,8 @@ class NestedRecordCombiner extends RecordCombiner {
     * @return The RDD of records in mainframe format
     */
   override def combine(df: DataFrame, cobolSchema: CobolSchema, readerParameters: ReaderParameters): RDD[Array[Byte]] = {
-    val hasRdw = readerParameters.recordFormat == RecordFormat.VariableLength
+    val isVb = readerParameters.recordFormat == RecordFormat.VariableBlock
+    val hasRdw = readerParameters.recordFormat == RecordFormat.VariableLength || isVb
     val isRdwBigEndian = readerParameters.isRdwBigEndian
     val adjustment1 = if (readerParameters.isRdwPartRecLength) 4 else 0
     val adjustment2 = readerParameters.rdwAdjustment
@@ -73,7 +74,7 @@ class NestedRecordCombiner extends RecordCombiner {
         s"RDW length $recordLengthLong exceeds ${Int.MaxValue} and cannot be encoded safely."
       )
     }
-    processRDD(df.rdd,
+    val recordsRdd = processRDD(df.rdd,
       cobolSchema.copybook,
       df.schema,
       size,
@@ -84,11 +85,130 @@ class NestedRecordCombiner extends RecordCombiner {
       readerParameters.variableSizeOccurs,
       readerParameters.strictSchema,
       readerParameters.writerParameters.get)
+
+    if (isVb) {
+      val bdw = readerParameters.bdw.getOrElse(
+        throw new IllegalArgumentException("Writing 'VB' records requires either 'records_per_block' or 'block_length' to be specified.")
+      )
+      groupIntoBlocks(recordsRdd, bdw.isBigEndian, bdw.adjustment, bdw.blockLength, bdw.recordsPerBlock)
+    } else {
+      recordsRdd
+    }
+  }
+
+  /**
+    * Groups an RDD of already-encoded records (each containing its own RDW + payload) into VB blocks.
+    *
+    * Each block is a single byte array of the form: BDW(4 bytes) ++ record1 ++ record2 ++ ...
+    * Grouping happens independently within each Spark partition (blocks never span partitions, which is
+    * consistent with the one-output-file-per-partition behaviour of the writer).
+    *
+    * Exactly one of `blockLength` / `recordsPerBlock` is expected to be set (mutual exclusion is enforced
+    * upstream during parameter parsing):
+    *   - `recordsPerBlock`: put exactly N records per block; the last block of a partition may be smaller.
+    *   - `blockLength`: pack records while the cumulative record bytes stay within the cap. A single record
+    *     that is larger than the cap still gets its own block (records are never split).
+    *
+    * @param rdd             The RDD of encoded records (RDW + payload each)
+    * @param isBdwBigEndian  Byte order of the BDW header
+    * @param bdwAdjustment   Value added to the block length before it is encoded into the BDW
+    * @param blockLength     Optional cap (in bytes) on the cumulative record bytes per block
+    * @param recordsPerBlock Optional exact number of records per block
+    * @return An RDD where each element is one complete VB block (BDW + records)
+    */
+  private[cobrix] def groupIntoBlocks(rdd: RDD[Array[Byte]],
+                                      isBdwBigEndian: Boolean,
+                                      bdwAdjustment: Int,
+                                      blockLength: Option[Int],
+                                      recordsPerBlock: Option[Int]): RDD[Array[Byte]] = {
+    rdd.mapPartitions { rawRecords =>
+      val records = rawRecords.buffered
+
+      new Iterator[Array[Byte]] {
+        override def hasNext: Boolean = records.hasNext
+
+        override def next(): Array[Byte] = {
+          val blockRecords = new mutable.ArrayBuffer[Array[Byte]]()
+
+          // Always take at least one record, so a record larger than 'block_length' still forms its own block.
+          val first = records.next()
+          blockRecords += first
+          var blockPayloadSize = first.length
+
+          var continue = true
+          while (continue && records.hasNext) {
+            val canAddByCount = recordsPerBlock.forall(n => blockRecords.length < n)
+            val canAddBySize = blockLength.forall(cap => blockPayloadSize + records.head.length <= cap)
+            if (canAddByCount && canAddBySize) {
+              val rec = records.next()
+              blockRecords += rec
+              blockPayloadSize += rec.length
+            } else {
+              continue = false
+            }
+          }
+
+          buildBlock(blockRecords, blockPayloadSize, isBdwBigEndian, bdwAdjustment)
+        }
+      }
+    }
   }
 }
 
 object NestedRecordCombiner {
   private val log = LoggerFactory.getLogger(this.getClass)
+
+  // The BDW normal form reserves the top bit as an "extended format" flag, leaving 15 bits for the length.
+  private final val MAX_BDW_BLOCK_LENGTH = 0x7FFF
+
+  /**
+    * Assembles a single VB block byte array from its records and prepends the 4-byte BDW header.
+    *
+    * @param records         The encoded records (each already RDW + payload) that belong to this block
+    * @param blockPayloadSize The total number of bytes occupied by all records in the block (excludes the BDW)
+    * @param isBdwBigEndian  Byte order of the BDW header
+    * @param bdwAdjustment   Value added to the block length before encoding it into the BDW
+    * @return The complete block: BDW(4 bytes) followed by every record
+    */
+  private[cobrix] def buildBlock(records: Iterable[Array[Byte]],
+                                 blockPayloadSize: Int,
+                                 isBdwBigEndian: Boolean,
+                                 bdwAdjustment: Int): Array[Byte] = {
+    val blockLengthField = blockPayloadSize + bdwAdjustment
+
+    if (blockLengthField < 0) {
+      throw new IllegalArgumentException(s"Invalid BDW block length $blockLengthField. Check 'bdw_adjustment'.")
+    }
+    if (blockLengthField > MAX_BDW_BLOCK_LENGTH) {
+      throw new IllegalArgumentException(
+        s"BDW block length $blockLengthField exceeds $MAX_BDW_BLOCK_LENGTH and cannot be encoded. Reduce 'block_length' or 'records_per_block'."
+      )
+    }
+
+    val block = new Array[Byte](4 + blockPayloadSize)
+
+    if (isBdwBigEndian) {
+      block(0) = ((blockLengthField >> 8) & 0x7F).toByte
+      block(1) = (blockLengthField & 0xFF).toByte
+      // The last two bytes are reserved and defined by IBM as binary zeros.
+      block(2) = 0
+      block(3) = 0
+    } else {
+      // Little-endian BDW: the first two bytes are reserved zeros, the length lives in bytes 2 and 3.
+      block(0) = 0
+      block(1) = 0
+      block(2) = (blockLengthField & 0xFF).toByte
+      block(3) = ((blockLengthField >> 8) & 0x7F).toByte
+    }
+
+    var offset = 4
+    records.foreach { rec =>
+      System.arraycopy(rec, 0, block, offset, rec.length)
+      offset += rec.length
+    }
+
+    block
+  }
 
   /**
     * Generates a field definition string containing the PIC clause and USAGE clause for a primitive COBOL field.

@@ -277,7 +277,7 @@ object CobolParametersParser extends Logging {
 
     val paths = pathsParam.map(_.split(',')).getOrElse(Array(getParameter(PARAM_SOURCE_PATH, params).getOrElse("")))
 
-    val variableLengthParams = parseVariableLengthParameters(params, recordFormatDefined)
+    val variableLengthParams = parseVariableLengthParameters(params, recordFormatDefined, isWriter)
 
     val recordFormat = if (recordFormatDefined == AsciiText && variableLengthParams.nonEmpty) {
       logger.info("According to options passed, the custom ASCII parser (record_format = D2) is used.")
@@ -551,7 +551,7 @@ object CobolParametersParser extends Logging {
       )
   }
 
-  private def parseVariableLengthParameters(params: Parameters, recordFormat: RecordFormat): Option[VariableLengthParameters] = {
+  private def parseVariableLengthParameters(params: Parameters, recordFormat: RecordFormat, isWriter: Boolean): Option[VariableLengthParameters] = {
     val recordLengthFieldOpt = params.get(PARAM_RECORD_LENGTH_FIELD)
     val isRecordSequence = Seq(FixedBlock, VariableLength, VariableBlock).contains(recordFormat)
     val isRecordIdGenerationEnabled = params.getOrElse(PARAM_GENERATE_RECORD_ID, "false").toBoolean
@@ -598,7 +598,7 @@ object CobolParametersParser extends Logging {
       Some(VariableLengthParameters
       (
         isRecordSequence,
-        parseBdw(params, recordFormat),
+        parseBdw(params, recordFormat, isWriter),
         params.getOrElse(PARAM_IS_RDW_BIG_ENDIAN, "false").toBoolean,
         params.getOrElse(PARAM_IS_RDW_PART_REC_LENGTH, "false").toBoolean,
         params.getOrElse(PARAM_RDW_ADJUSTMENT, "0").toInt,
@@ -626,7 +626,7 @@ object CobolParametersParser extends Logging {
     }
   }
 
-  private def parseBdw(params: Parameters, recordFormat: RecordFormat): Option[Bdw] = {
+  private def parseBdw(params: Parameters, recordFormat: RecordFormat, isWriter: Boolean): Option[Bdw] = {
     if (recordFormat == FixedBlock || recordFormat == VariableBlock) {
       val bdw = Bdw(
         params.getOrElse(PARAM_IS_BDW_BIG_ENDIAN, "false").toBoolean,
@@ -637,7 +637,9 @@ object CobolParametersParser extends Logging {
       if (bdw.blockLength.nonEmpty && bdw.recordsPerBlock.nonEmpty) {
         throw new IllegalArgumentException(s"Options '$PARAM_BLOCK_LENGTH' and '$PARAM_RECORDS_PER_BLOCK' cannot be used together.")
       }
-      if (recordFormat == VariableBlock && bdw.blockLength.nonEmpty) {
+      // When reading VB the block length is self-described by the BDW header in the file, so 'block_length' is ignored.
+      // When writing VB, 'block_length' is meaningful: it caps how many records are packed into each block.
+      if (recordFormat == VariableBlock && bdw.blockLength.nonEmpty && !isWriter) {
         logger.warn(s"Option '$PARAM_BLOCK_LENGTH' is ignored for record format: VB")
       }
       if (recordFormat == FixedBlock && bdw.recordsPerBlock.nonEmpty) {
