@@ -75,13 +75,13 @@ You can link against this library in your program at the following coordinates:
 </tr>
 <tr>
 <td>
-<pre>groupId: za.co.absa.cobrix<br>artifactId: spark-cobol_2.11<br>version: 2.10.7</pre>
+<pre>groupId: za.co.absa.cobrix<br>artifactId: spark-cobol_2.11<br>version: 2.10.8</pre>
 </td>
 <td>
-<pre>groupId: za.co.absa.cobrix<br>artifactId: spark-cobol_2.12<br>version: 2.10.7</pre>
+<pre>groupId: za.co.absa.cobrix<br>artifactId: spark-cobol_2.12<br>version: 2.10.8</pre>
 </td>
 <td>
-<pre>groupId: za.co.absa.cobrix<br>artifactId: spark-cobol_2.13<br>version: 2.10.7</pre>
+<pre>groupId: za.co.absa.cobrix<br>artifactId: spark-cobol_2.13<br>version: 2.10.8</pre>
 </td>
 </tr>
 </table>
@@ -92,17 +92,17 @@ This package can be added to Spark using the `--packages` command line option. F
 
 ### Spark compiled with Scala 2.11
 ```
-$SPARK_HOME/bin/spark-shell --packages za.co.absa.cobrix:spark-cobol_2.11:2.10.7
+$SPARK_HOME/bin/spark-shell --packages za.co.absa.cobrix:spark-cobol_2.11:2.10.8
 ```
 
 ### Spark compiled with Scala 2.12
 ```
-$SPARK_HOME/bin/spark-shell --packages za.co.absa.cobrix:spark-cobol_2.12:2.10.7
+$SPARK_HOME/bin/spark-shell --packages za.co.absa.cobrix:spark-cobol_2.12:2.10.8
 ```
 
 ### Spark compiled with Scala 2.13
 ```
-$SPARK_HOME/bin/spark-shell --packages za.co.absa.cobrix:spark-cobol_2.13:2.10.7
+$SPARK_HOME/bin/spark-shell --packages za.co.absa.cobrix:spark-cobol_2.13:2.10.8
 ```
 
 ## Usage
@@ -231,8 +231,8 @@ Cobrix's `spark-cobol` data source depends on the COBOL parser that is a part of
 
 The jars that you need to get are:
 
-* spark-cobol_2.12-2.10.7.jar
-* cobol-parser_2.12-2.10.7.jar
+* spark-cobol_2.12-2.10.8.jar
+* cobol-parser_2.12-2.10.8.jar
 
 > Versions older than 2.8.0 also need `scodec-core_2.12-1.10.3.jar` and `scodec-bits_2.12-1.1.4.jar`.
 
@@ -240,9 +240,9 @@ The jars that you need to get are:
 
 After that you can specify these jars in `spark-shell` command line. Here is an example:
 ```
-$ spark-shell --packages za.co.absa.cobrix:spark-cobol_2.12:2.10.7
+$ spark-shell --packages za.co.absa.cobrix:spark-cobol_2.12:2.10.8
 or 
-$ spark-shell --master yarn --deploy-mode client --driver-cores 4 --driver-memory 4G --jars spark-cobol_2.12-2.10.7.jar,cobol-parser_2.12-2.10.7.jar
+$ spark-shell --master yarn --deploy-mode client --driver-cores 4 --driver-memory 4G --jars spark-cobol_2.12-2.10.8.jar,cobol-parser_2.12-2.10.8.jar
 
 Setting default log level to "WARN".
 To adjust logging level use sc.setLogLevel(newLevel). For SparkR, use setLogLevel(newLevel).
@@ -310,7 +310,7 @@ The fat jar will have '-bundle' suffix. You can also download pre-built bundles 
 
 Then, run `spark-shell` or `spark-submit` adding the fat jar as the option.
 ```sh
-$ spark-shell --jars spark-cobol_2.12_3.3-2.10.8-SNAPSHOT-bundle.jar
+$ spark-shell --jars spark-cobol_2.12_3.3-2.10.9-SNAPSHOT-bundle.jar
 ```
 
 > <b>A note for building and running tests on Windows</b>
@@ -2137,6 +2137,24 @@ at org.apache.hadoop.io.nativeio.NativeIO$POSIX.getStat(NativeIO.java:608)
 A: Update hadoop dll to version 3.2.2 or newer.
 
 ## Changelog
+- #### 2.10.8 released 3 August 2026.
+    - [#862](https://github.com/AbsaOSS/cobrix/pull/862) Custom options that start with `_custom` or just `_` are ignored in pedantic mode:
+      ```scala
+      spark.read
+        .format("cobol")
+        .option("record_extractor", "com.example.CustomRecordExtractor")
+        .option("pedantic", "true")
+        .option("custom_option1", "value1")
+        .option("_option2", "value2")
+      ```
+    - [#863](https://github.com/AbsaOSS/cobrix/pull/863) Added support for custom AST transformers via the `ast_transformers` option:
+      ```scala
+      spark.read
+        .format("cobol")
+        .option("ast_transformers", "com.example.CustomASTTransformer")
+      ```
+    - [#727](https://github.com/AbsaOSS/cobrix/pull/727) Fixed parsing of '88 VALUE1  VALUE +999.9999.' statement that threw 'SytnaxErrorException'.
+
 - #### 2.10.7 released 27 July 2026.
     - [#857](https://github.com/AbsaOSS/cobrix/pull/857) Added the ability to specify record limit as an option for Cobrix. Thanks @lokm01!
       ```scala
