@@ -37,7 +37,7 @@ class CobolParametersValidatorSuite extends AnyWordSpec {
         CobolParametersValidator.validateParametersForWriting(readParams)
       }
 
-      assert(ex.getMessage.contains("Writer validation issues: Only 'F' and 'V' values for 'record_format' are supported for writing, provided value: 'VB';"))
+      assert(ex.getMessage.contains("Writing 'VB' records requires either 'records_per_block' or 'block_length' to be specified"))
       assert(ex.getMessage.contains("OCCURS mapping option ('occurs_mappings') is not supported for writing"))
       assert(ex.getMessage.contains("'record_start_offset' and 'record_end_offset' are not supported for writing"))
       assert(ex.getMessage.contains("'file_start_offset' and 'file_end_offset' are not supported for writing"))

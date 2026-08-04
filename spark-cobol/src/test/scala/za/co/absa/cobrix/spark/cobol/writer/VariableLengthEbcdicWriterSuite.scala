@@ -153,7 +153,7 @@ class VariableLengthEbcdicWriterSuite extends AnyWordSpec with SparkTestBase wit
             .save(path.toString)
         }
 
-        assert(exception.getMessage.contains("Writer validation issues: Only 'F' and 'V' values for 'record_format' are supported for writing, provided value: 'FB';"))
+        assert(exception.getMessage.contains("Writer validation issues: Only 'F', 'V' and 'VB' values for 'record_format' are supported for writing, provided value: 'FB';"))
         assert(exception.getMessage.contains("OCCURS mapping option ('occurs_mappings') is not supported for writing"))
         assert(exception.getMessage.contains("'record_start_offset' and 'record_end_offset' are not supported for writing"))
         assert(exception.getMessage.contains("'file_start_offset' and 'file_end_offset' are not supported for writing"))

@@ -145,9 +145,19 @@ object CobolParametersValidator {
   def validateParametersForWriting(readerParameters: ReaderParameters): Unit = {
     val issues = new ListBuffer[String]
 
-    if (readerParameters.recordFormat != RecordFormat.FixedLength && readerParameters.recordFormat != RecordFormat.VariableLength) {
-      issues += s"Only '${RecordFormat.FixedLength}' and '${RecordFormat.VariableLength}' values for 'record_format' are supported for writing, " +
+    if (readerParameters.recordFormat != RecordFormat.FixedLength &&
+        readerParameters.recordFormat != RecordFormat.VariableLength &&
+        readerParameters.recordFormat != RecordFormat.VariableBlock) {
+      issues += s"Only '${RecordFormat.FixedLength}', '${RecordFormat.VariableLength}' and '${RecordFormat.VariableBlock}' values for 'record_format' are supported for writing, " +
         s"provided value: '${readerParameters.recordFormat}'"
+    }
+
+    if (readerParameters.recordFormat == RecordFormat.VariableBlock) {
+      val hasBlockLength = readerParameters.bdw.exists(_.blockLength.nonEmpty)
+      val hasRecordsPerBlock = readerParameters.bdw.exists(_.recordsPerBlock.nonEmpty)
+      if (!hasBlockLength && !hasRecordsPerBlock) {
+        issues += "Writing 'VB' records requires either 'records_per_block' or 'block_length' to be specified"
+      }
     }
 
     if (readerParameters.occursMappings.nonEmpty) {
