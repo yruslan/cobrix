@@ -20,5 +20,6 @@ case class WriterParameters(
                              isEbcdic: Boolean = true,
                              nullStringsAsSpaces: Boolean = false,
                              nullDisplayNumbersAsZeros: Boolean = false,
-                             nullComp3NumbersAsZeros: Boolean = false
+                             nullComp3NumbersAsZeros: Boolean = false,
+                             strictRedefines: Boolean = false
                            )

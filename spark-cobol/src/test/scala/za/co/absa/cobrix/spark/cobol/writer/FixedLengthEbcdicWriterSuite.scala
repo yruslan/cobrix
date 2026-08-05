@@ -568,12 +568,38 @@ class FixedLengthEbcdicWriterSuite extends AnyWordSpec with SparkTestBase with B
               .format("cobol")
               .mode(SaveMode.Overwrite)
               .option("copybook_contents", copybookContentsWithRedefines)
+              .option("write_strict_redefines", "true")
               .save(path.toString)
           }
 
           val messages = causeChainMessages(thrown)
           assert(messages.exists(m => m.contains("B") && m.contains("B1")),
             s"Expected an error mentioning both conflicting REDEFINES fields 'B' and 'B1', but got: ${messages.mkString(" | ")}")
+        }
+      }
+
+      "write the first alternative when multiple REDEFINES fields are populated and strict is disabled" in {
+        withTempDirectory("cobol_writer_redefines") { tempDir =>
+          val df = List(("X", 12345, "ABCDE")).toDF("A", "B", "B1")
+
+          val path = new Path(tempDir, "writer_redefines_first_wins")
+
+          df.coalesce(1)
+            .write
+            .format("cobol")
+            .mode(SaveMode.Overwrite)
+            .option("copybook_contents", copybookContentsWithRedefines)
+            .save(path.toString)
+
+          val bytes = readPartFileBytes(path)
+
+          // A='X' (0xE7), then B=12345 as EBCDIC DISPLAY digits (0xF1..0xF5). B1 ("ABCDE") is ignored.
+          val expected = Array[Byte](
+            0xE7.toByte,
+            0xF1.toByte, 0xF2.toByte, 0xF3.toByte, 0xF4.toByte, 0xF5.toByte
+          )
+
+          assertArraysEqual(bytes, expected)
         }
       }
 
@@ -662,12 +688,46 @@ class FixedLengthEbcdicWriterSuite extends AnyWordSpec with SparkTestBase with B
               .format("cobol")
               .mode(SaveMode.Overwrite)
               .option("copybook_contents", copybookContentsWithThreeWayRedefines)
+              .option("write_strict_redefines", "true")
               .save(path.toString)
           }
 
           val messages = causeChainMessages(thrown)
           assert(messages.exists(m => m.contains("B") && m.contains("B2")),
             s"Expected an error mentioning both conflicting REDEFINES fields 'B' and 'B2', but got: ${messages.mkString(" | ")}")
+        }
+      }
+
+      "write the first alternative of a three-way REDEFINES chain when multiple are populated and strict is disabled" in {
+        withTempDirectory("cobol_writer_redefines") { tempDir =>
+          val copybookContentsWithThreeWayRedefines =
+            """       01  RECORD.
+                 05  A       PIC X(1).
+                 05  B       PIC 9(5).
+                 05  B1      PIC X(5)       REDEFINES B.
+                 05  B2      PIC 9(3)V99    REDEFINES B.
+            """
+
+          val df = List(("X", 12345, new java.math.BigDecimal("123.45"))).toDF("A", "B", "B2")
+
+          val path = new Path(tempDir, "writer_redefines_three_first_wins")
+
+          df.coalesce(1)
+            .write
+            .format("cobol")
+            .mode(SaveMode.Overwrite)
+            .option("copybook_contents", copybookContentsWithThreeWayRedefines)
+            .save(path.toString)
+
+          val bytes = readPartFileBytes(path)
+
+          // A='X' (0xE7), then B=12345 (0xF1..0xF5). B2 is ignored.
+          val expected = Array[Byte](
+            0xE7.toByte,
+            0xF1.toByte, 0xF2.toByte, 0xF3.toByte, 0xF4.toByte, 0xF5.toByte
+          )
+
+          assertArraysEqual(bytes, expected)
         }
       }
 

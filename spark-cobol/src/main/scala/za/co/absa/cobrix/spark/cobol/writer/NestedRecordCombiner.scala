@@ -551,10 +551,21 @@ object NestedRecordCombiner {
             actualSize
           case multiple =>
             val fieldNames = multiple.map(_.fieldName).mkString("', '")
-            throw new IllegalArgumentException(
-              s"Conflicting REDEFINES fields populated on the same row: '$fieldNames'. " +
-                s"Only one field of a REDEFINES group can have a non-null value at a time."
-            )
+            if (writerParameters.strictRedefines) {
+              throw new IllegalArgumentException(
+                s"Conflicting REDEFINES fields populated on the same row: '$fieldNames'. " +
+                  s"Only one field of a REDEFINES group can have a non-null value at a time."
+              )
+            } else {
+              val chosen = multiple.head
+              log.warn(
+                s"Conflicting REDEFINES fields populated on the same row: '$fieldNames'. " +
+                  s"Writing the first populated alternative ('${chosen.fieldName}') and ignoring the rest. " +
+                  s"Set 'write_strict_redefines' to 'true' to fail instead."
+              )
+              writeToBytes(chosen.ast, row, ar, currentOffset, variableLengthOccurs, writerParameters)
+            }
+            actualSize
         }
     }
   }

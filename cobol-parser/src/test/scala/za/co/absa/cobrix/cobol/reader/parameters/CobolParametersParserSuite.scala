@@ -76,6 +76,7 @@ class CobolParametersParserSuite extends AnyWordSpec {
         "write_null_strings_as_spaces" -> "false",
         "write_null_display_numbers_as_zeros" -> "true",
         "write_null_comp3_numbers_as_zeros" -> "true",
+        "write_strict_redefines" -> "true",
         "pedantic" -> "true"
       ))
 
@@ -83,7 +84,8 @@ class CobolParametersParserSuite extends AnyWordSpec {
       assert(parsedParams.writerParameters.get == WriterParameters(
         nullStringsAsSpaces = false,
         nullDisplayNumbersAsZeros = true,
-        nullComp3NumbersAsZeros = true
+        nullComp3NumbersAsZeros = true,
+        strictRedefines = true
       ))
     }
   }
