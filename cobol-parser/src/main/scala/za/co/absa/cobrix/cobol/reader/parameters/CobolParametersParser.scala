@@ -149,6 +149,7 @@ object CobolParametersParser extends Logging {
   val PARAM_WRITE_NULL_STRINGS_AS_SPACES           = "write_null_strings_as_spaces"
   val PARAM_WRITE_NULL_DISPLAY_NUMBERS_AS_ZEROS    = "write_null_display_numbers_as_zeros"
   val PARAM_WRITE_NULL_COMP3_NUMBERS_AS_ZEROS      = "write_null_comp3_numbers_as_zeros"
+  val PARAM_WRITE_STRICT_REDEFINES                 = "write_strict_redefines"
 
   val MIN_RECORDS_FOR_INDEXES = 100000
 
@@ -381,7 +382,8 @@ object CobolParametersParser extends Logging {
       isEbcdic = isEbcdic,
       nullStringsAsSpaces = parameters.getOrElse(PARAM_WRITE_NULL_STRINGS_AS_SPACES, "false").toBoolean,
       nullDisplayNumbersAsZeros = parameters.getOrElse(PARAM_WRITE_NULL_DISPLAY_NUMBERS_AS_ZEROS, "false").toBoolean,
-      nullComp3NumbersAsZeros = parameters.getOrElse(PARAM_WRITE_NULL_COMP3_NUMBERS_AS_ZEROS, "false").toBoolean
+      nullComp3NumbersAsZeros = parameters.getOrElse(PARAM_WRITE_NULL_COMP3_NUMBERS_AS_ZEROS, "false").toBoolean,
+      strictRedefines = parameters.getOrElse(PARAM_WRITE_STRICT_REDEFINES, "false").toBoolean
     )
   }
 

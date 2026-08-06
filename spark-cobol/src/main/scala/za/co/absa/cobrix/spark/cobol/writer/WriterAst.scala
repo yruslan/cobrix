@@ -42,6 +42,8 @@ sealed trait WriterAst
   * - GroupField represents a COBOL group containing child fields with its getter function
   * - PrimitiveArray represents an array of primitive values with optional depending-on semantics
   * - GroupArray represents an array of group structures with optional depending-on semantics
+  * - RedefineGroup represents a set of mutually exclusive REDEFINES alternatives sharing the
+  *   same byte region; at most one alternative may be populated in a given row
   *
   * The depending-on fields support COBOL's OCCURS DEPENDING ON clause, where the actual number
   * of array elements is determined by the value of another field at runtime.
@@ -57,4 +59,24 @@ object WriterAst {
   case class GroupField(children: Seq[WriterAst], cobolField: Group, getter: GroupGetter) extends WriterAst
   case class PrimitiveArray(cobolField: Primitive, arrayGetter: ArrayGetter, dependingOn: Option[DependingOnField]) extends WriterAst
   case class GroupArray(groupField: GroupField, cobolField: Group, arrayGetter: ArrayGetter, dependingOn: Option[DependingOnField]) extends WriterAst
+
+  /**
+    * One alternative of a REDEFINES chain, keeping the original copybook field name for
+    * error reporting purposes alongside the constructed writer AST node for that alternative.
+    */
+  case class RedefineAlternative(fieldName: String, ast: WriterAst)
+
+  /**
+    * Represents a group of mutually exclusive fields (or groups) that occupy the same byte
+    * region of a record because one REDEFINES another (directly or transitively).
+    *
+    * At write time, at most one alternative is expected to carry a non-null value for a given
+    * row. If none carry a value, the shared bytes are left as zeroes (like a filler). If more
+    * than one carry a value, writing fails fast since it would be ambiguous which value should
+    * be encoded into the shared bytes.
+    *
+    * @param alternatives The list of mutually exclusive alternatives sharing the byte region.
+    * @param actualSize   The size, in bytes, of the shared byte region (uniform across all alternatives).
+    */
+  case class RedefineGroup(alternatives: Seq[RedefineAlternative], actualSize: Int) extends WriterAst
 }
