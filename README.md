@@ -1692,6 +1692,11 @@ val df = spark.read
   .load("/some/path")
 ```
 
+**Note.** Cobrix uses GPG package from `org.bouncycastle`. Some environments (for example AWS Glue) already include their own
+version of these crypto packages (as part of AWS encryption SDK). This can create binary incompatibilities, so it is recommended
+to shaderelocate this package in your projects: `org.bouncycastle:*` or `org.bouncycastle.**` classes. If you build `spark-cobol`
+using `sbt assembly`, this is already being done.
+
 ## Summary of all available options
 
 ##### File reading options
@@ -1838,6 +1843,7 @@ val df = spark
 | .option("write_null_strings_as_spaces", "false")        | If 'true' Cobrix will write `null` alphanumeric fields as spaces when writing output files.                                                                                                                                           |
 | .option("write_null_display_numbers_as_zeros", "false") | If 'true' Cobrix will write `null` numeric fields having DISPLAY format as serquence of zeros when writing output files.                                                                                                              |
 | .option("write_null_comp3_numbers_as_zeros", "false")   | If 'true' Cobrix will write `null` numeric fields having COMP-3 format as zeros when writing EBCDIC files.                                                                                                                            |
+| .option("write_strict_redefines", "false")              | if 'true' Cobrix is going to fail when input DataFrame contains non-null values for more than 1 REDEFINE in a REDEFINE group.                                                                                                         |
 
 ##### Currently supported EBCDIC code pages
 
@@ -2010,8 +2016,9 @@ The writer is still in its early stages and has several limitations:
   - `PIC X(n)` alphanumeric.
   - `PIC S9(n)` numeric (integral and decimal) with `DISPLAY`, `COMP`/`COMP-4`/`COMP-5` (big-endian), 
     `COMP-1`/`COMP2` (floating-point IBM and IEEE754) , `COMP-3`, and `COMP-9` (Cobrix little-endian).
-- Only fixed record length and variable record length with RDWs are supported (`record_format` is either `F` or `V`).
-- `REDEFINES` are ignored. Cobrix writes only the first field in a REDEFINES group.
+- Record formats (`record_format`) supported: `F`, `V`, `VB`. `records_per_block` or `block_length` needs to be specified for `VB`.
+- `REDEFINE`s are supported. Cobrix writes first non-null REDEFINE in REDEFINE group. It can require for only one REDEFINE
+  in a group to be non-null using `write_strict_redefines`.
 - Partitioning by DataFrame fields is not supported.
 
 ### Implementation details

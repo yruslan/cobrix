@@ -502,13 +502,13 @@ class FixedLengthEbcdicWriterSuite extends AnyWordSpec with SparkTestBase with B
       val copybookContentsWithRedefines =
         """       01  RECORD.
              05  A       PIC X(1).
-             05  B       PIC 9(5).
-             05  B1      PIC X(5)       REDEFINES B.
+             05  B1      PIC 9(5).
+             05  B2      PIC X(5)       REDEFINES B1.
         """
 
       "write using only the base field of a REDEFINES group" in {
         withTempDirectory("cobol_writer_redefines") { tempDir =>
-          val df = List(("X", 12345)).toDF("A", "B")
+          val df = List(("X", 12345)).toDF("A", "B1")
 
           val path = new Path(tempDir, "writer_redefines_base")
 
@@ -533,7 +533,7 @@ class FixedLengthEbcdicWriterSuite extends AnyWordSpec with SparkTestBase with B
 
       "write using only the redefining field of a REDEFINES group" in {
         withTempDirectory("cobol_writer_redefines") { tempDir =>
-          val df = List(("X", "ABCDE")).toDF("A", "B1")
+          val df = List(("X", "ABCDE")).toDF("A", "B2")
 
           val path = new Path(tempDir, "writer_redefines_alt")
 
@@ -558,7 +558,7 @@ class FixedLengthEbcdicWriterSuite extends AnyWordSpec with SparkTestBase with B
 
       "fail fast when both the base and the redefining fields are populated on the same row" in {
         withTempDirectory("cobol_writer_redefines") { tempDir =>
-          val df = List(("X", 12345, "ABCDE")).toDF("A", "B", "B1")
+          val df = List(("X", 12345, "ABCDE")).toDF("A", "B1", "B2")
 
           val path = new Path(tempDir, "writer_redefines_conflict")
 
@@ -574,13 +574,13 @@ class FixedLengthEbcdicWriterSuite extends AnyWordSpec with SparkTestBase with B
 
           val messages = causeChainMessages(thrown)
           assert(messages.exists(m => m.contains("B") && m.contains("B1")),
-            s"Expected an error mentioning both conflicting REDEFINES fields 'B' and 'B1', but got: ${messages.mkString(" | ")}")
+            s"Expected an error mentioning both conflicting REDEFINES fields 'B1' and 'B2', but got: ${messages.mkString(" | ")}")
         }
       }
 
       "write the first alternative when multiple REDEFINES fields are populated and strict is disabled" in {
         withTempDirectory("cobol_writer_redefines") { tempDir =>
-          val df = List(("X", 12345, "ABCDE")).toDF("A", "B", "B1")
+          val df = List(("X", 12345, "ABCDE")).toDF("A", "B1", "B2")
 
           val path = new Path(tempDir, "writer_redefines_first_wins")
 
@@ -610,7 +610,7 @@ class FixedLengthEbcdicWriterSuite extends AnyWordSpec with SparkTestBase with B
             ("2", None, Some("AAAAA")),
             ("3", Some(33333), None),
             ("4", None, Some("BBBBB"))
-          ).toDF("A", "B", "B1")
+          ).toDF("A", "B1", "B2")
 
           val path = new Path(tempDir, "writer_redefines_mixed_rows")
 
@@ -668,17 +668,77 @@ class FixedLengthEbcdicWriterSuite extends AnyWordSpec with SparkTestBase with B
         }
       }
 
+      "write supporting 2 views on the same field" in {
+        withTempDirectory("cobol_writer_redefines") { tempDir =>
+          val copybookContentsWith2Views =
+            """       01  RECORD.
+                 05  A          PIC X(1).
+                 05  ACCOUNT    PIC 9(7).
+                 05  DETAIL      REDEFINES ACCOUNT.
+                    10  PREFIX  PIC 9(3).
+                    10  SUFFIX  PIC 9(4).
+            """
+
+          // Each row uses one of the 2 views on the same 7 bytes:
+          //   * the flat view    - ACCOUNT
+          //   * the split view   - DETAIL (PREFIX + SUFFIX)
+          //   * both are present
+          val exampleJsons = Seq(
+            """{"A":"X","ACCOUNT":1234567}""",
+            """{"A":"Y","DETAIL":{"PREFIX":234,"SUFFIX":5678}}""",
+            """{"A":"Z","ACCOUNT":3456789,"DETAIL":{"PREFIX":456,"SUFFIX":7890}}"""
+          )
+
+          val df = spark.read.json(exampleJsons.toDS())
+            .select("A", "ACCOUNT", "DETAIL")
+
+          val path = new Path(tempDir, "writer_redefines_2_views")
+
+          df.coalesce(1)
+            .orderBy("A")
+            .write
+            .format("cobol")
+            .mode(SaveMode.Overwrite)
+            .option("copybook_contents", copybookContentsWith2Views)
+            .save(path.toString)
+
+          val bytes = readPartFileBytes(path)
+
+          // Row 1: A='X', ACCOUNT=1234567 (DISPLAY digits), DETAIL absent
+          val row1 = Array[Byte](
+            0xE7.toByte,
+            0xF1.toByte, 0xF2.toByte, 0xF3.toByte, 0xF4.toByte, 0xF5.toByte, 0xF6.toByte, 0xF7.toByte
+          )
+
+          // Row 2: A='Y', DETAIL populated (PREFIX=123, SUFFIX=4567), ACCOUNT absent
+          val row2 = Array[Byte](
+            0xE8.toByte,
+            0xF2.toByte, 0xF3.toByte, 0xF4.toByte,
+            0xF5.toByte, 0xF6.toByte, 0xF7.toByte, 0xF8.toByte
+          )
+
+          // Row 3: A='Z', ACCOUNT=3456789, DETAIL populated (PREFIX=456, SUFFIX=7890)
+          val row3 = Array[Byte](
+            0xE9.toByte,
+            0xF3.toByte, 0xF4.toByte, 0xF5.toByte,
+            0xF6.toByte, 0xF7.toByte, 0xF8.toByte, 0xF9.toByte
+          )
+
+          assertArraysEqual(bytes, row1 ++ row2 ++ row3)
+        }
+      }
+
       "fail fast when two non-adjacent alternatives of a three-way REDEFINES chain are both populated" in {
         withTempDirectory("cobol_writer_redefines") { tempDir =>
           val copybookContentsWithThreeWayRedefines =
             """       01  RECORD.
                  05  A       PIC X(1).
-                 05  B       PIC 9(5).
-                 05  B1      PIC X(5)       REDEFINES B.
-                 05  B2      PIC 9(3)V99    REDEFINES B.
+                 05  B1      PIC 9(5).
+                 05  B2      PIC X(5)       REDEFINES B1.
+                 05  B3      PIC 9(3)V99    REDEFINES B1.
             """
 
-          val df = List(("X", 12345, new java.math.BigDecimal("123.45"))).toDF("A", "B", "B2")
+          val df = List(("X", 12345, new java.math.BigDecimal("123.45"))).toDF("A", "B1", "B3")
 
           val path = new Path(tempDir, "writer_redefines_third_conflict")
 
@@ -693,8 +753,8 @@ class FixedLengthEbcdicWriterSuite extends AnyWordSpec with SparkTestBase with B
           }
 
           val messages = causeChainMessages(thrown)
-          assert(messages.exists(m => m.contains("B") && m.contains("B2")),
-            s"Expected an error mentioning both conflicting REDEFINES fields 'B' and 'B2', but got: ${messages.mkString(" | ")}")
+          assert(messages.exists(m => m.contains("B1") && m.contains("B3")),
+            s"Expected an error mentioning both conflicting REDEFINES fields 'B1' and 'B3', but got: ${messages.mkString(" | ")}")
         }
       }
 
@@ -703,12 +763,12 @@ class FixedLengthEbcdicWriterSuite extends AnyWordSpec with SparkTestBase with B
           val copybookContentsWithThreeWayRedefines =
             """       01  RECORD.
                  05  A       PIC X(1).
-                 05  B       PIC 9(5).
-                 05  B1      PIC X(5)       REDEFINES B.
-                 05  B2      PIC 9(3)V99    REDEFINES B.
+                 05  B1      PIC 9(5).
+                 05  B2      PIC X(5)       REDEFINES B1.
+                 05  B3      PIC 9(3)V99    REDEFINES B1.
             """
 
-          val df = List(("X", 12345, new java.math.BigDecimal("123.45"))).toDF("A", "B", "B2")
+          val df = List(("X", 12345, new java.math.BigDecimal("123.45"))).toDF("A", "B1", "B3")
 
           val path = new Path(tempDir, "writer_redefines_three_first_wins")
 

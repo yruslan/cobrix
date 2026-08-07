@@ -21,7 +21,7 @@ import org.apache.spark.sql.types.{ArrayType, StructType}
 import org.apache.spark.sql.{DataFrame, Row}
 import org.slf4j.LoggerFactory
 import za.co.absa.cobrix.cobol.parser.Copybook
-import za.co.absa.cobrix.cobol.parser.ast.datatype.{AlphaNumeric, COMP3, Decimal, Integral}
+import za.co.absa.cobrix.cobol.parser.ast.datatype.{Decimal, Integral}
 import za.co.absa.cobrix.cobol.parser.ast.{Group, Primitive, Statement}
 import za.co.absa.cobrix.cobol.parser.policies.VariableSizeOccursPolicy
 import za.co.absa.cobrix.cobol.parser.recordformats.RecordFormat
@@ -678,11 +678,6 @@ object NestedRecordCombiner {
               )
             } else {
               val chosen = multiple.head
-              log.warn(
-                s"Conflicting REDEFINES fields populated on the same row: '$fieldNames'. " +
-                  s"Writing the first populated alternative ('${chosen.fieldName}') and ignoring the rest. " +
-                  s"Set 'write_strict_redefines' to 'true' to fail instead."
-              )
               writeToBytes(chosen.ast, row, ar, currentOffset, variableLengthOccurs, writerParameters)
             }
             actualSize
